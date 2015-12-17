@@ -128,6 +128,7 @@ struct GrooveBuffer {
     struct GrooveAudioFormat format;
     int frame_count;
     struct GroovePlaylistItem *item;
+    double pos;
     int size;
     uint64_t pts;
 };
@@ -165,18 +166,88 @@ int groove_sink_buffer_peek(struct GrooveSink *sink, int block);
 int groove_sink_set_gain(struct GrooveSink *sink, double gain);
 """
 
+_queue_header = r"""
+struct GrooveQueue {
+    void *context;
+    void (*cleanup)(struct GrooveQueue*, void *obj);
+    void (*put)(struct GrooveQueue*, void *obj);
+    void (*get)(struct GrooveQueue*, void *obj);
+    void (*purge)(struct GrooveQueue*, void *obj);
+};
+
+struct GrooveQueue *groove_queue_create(void);
+
+void groove_queue_flush(struct GrooveQueue *queue);
+
+void groove_queue_destroy(struct GrooveQueue *queue);
+
+void groove_queue_abort(struct GrooveQueue *queue);
+void groove_queue_reset(struct GrooveQueue *queue);
+
+int groove_queue_put(struct GrooveQueue *queue, void *obj);
+
+int groove_queue_get(struct GrooveQueue *queue, void **obj_ptr, int block);
+
+int groove_queue_peek(struct GrooveQueue *queue, int block);
+
+void groove_queue_purge(struct GrooveQueue *queue);
+
+void groove_queue_cleanup_default(struct GrooveQueue *queue, void *obj);
+"""
+
+_encoder_header = r"""
+struct GrooveEncoder {
+    struct GrooveAudioFormat target_audio_format;
+    int bit_rate;
+    const char *format_short_name;
+    const char *codec_short_name;
+    const char *filename;
+    const char *mime_type;
+    int sink_buffer_size;
+    int encoded_buffer_size;
+    double gain;
+    struct GroovePlaylist *playlist;
+    struct GrooveAudioFormat actual_audio_format;
+};
+
+struct GrooveEncoder *groove_encoder_create(void);
+void groove_encoder_destroy(struct GrooveEncoder *encoder);
+
+int groove_encoder_attach(struct GrooveEncoder *encoder,
+        struct GroovePlaylist *playlist);
+int groove_encoder_detach(struct GrooveEncoder *encoder);
+
+int groove_encoder_buffer_get(struct GrooveEncoder *encoder,
+        struct GrooveBuffer **buffer, int block);
+
+int groove_encoder_buffer_peek(struct GrooveEncoder *encoder, int block);
+
+struct GrooveTag *groove_encoder_metadata_get(struct GrooveEncoder *encoder,
+        const char *key, const struct GrooveTag *prev, int flags);
+
+int groove_encoder_metadata_set(struct GrooveEncoder *encoder, const char *key,
+        const char *value, int flags);
+
+void groove_encoder_position(struct GrooveEncoder *encoder,
+        struct GroovePlaylistItem **item, double *seconds);
+
+int groove_encoder_set_gain(struct GrooveEncoder *encoder, double gain);
+"""
+
 ##########
 # FFI Build
 ##########
 
 _groove_source = r"""
-#include <groove/encoder.h>
 #include <groove/groove.h>
 #include <groove/queue.h>
+#include <groove/encoder.h>
 """
 ffi_groove = FFI()
 ffi_groove.set_source('groove._groove', _groove_source, libraries=['groove'])
 ffi_groove.cdef(_groove_header)
+ffi_groove.cdef(_queue_header)
+ffi_groove.cdef(_encoder_header)
 
 if __name__ == '__main__':
     ffi_groove.compile()
