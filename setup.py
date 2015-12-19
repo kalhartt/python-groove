@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 import re
+import sys
 
 from codecs import open
 from setuptools import setup
@@ -14,7 +15,13 @@ packages = [
 ]
 
 requires = [
+    'cffi>=1.0.0',
 ]
+
+if sys.version_info < (3, 4):
+    requires += [
+        'enum34'
+    ]
 
 with open('src/groove/__init__.py', 'r') as fd:
     version = re.search(r'^__version__\s*=\s*[\'"]([^\'"]*)[\'"]',
