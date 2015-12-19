@@ -244,7 +244,7 @@ _groove_source = r"""
 #include <groove/encoder.h>
 """
 ffi_groove = FFI()
-ffi_groove.set_source('groove._groove', _groove_source, libraries=['groove'])
+ffi_groove.set_source('groove._groove', _groove_source, libraries=[':libgroove.so.4'])
 ffi_groove.cdef(_groove_header)
 ffi_groove.cdef(_queue_header)
 ffi_groove.cdef(_encoder_header)
