@@ -3,6 +3,11 @@ Module providing wrapper classes for a pythonic interface to libgroove.so
 """
 from __future__ import absolute_import, unicode_literals
 
+try:
+    from collections import MutableSequence
+except ImportError:
+    from collections.abc import MutableSequence
+
 from collections import OrderedDict
 from enum import IntEnum
 from functools import wraps
@@ -425,3 +430,226 @@ class File(object):
 
     def __exit__(self, exc_type, exc_value, exc_trackback):
         self.close()
+
+    def __eq__(self, rhs):
+        if not isinstance(rhs, File):
+            return False
+        return self.filename == rhs.filename
+
+
+class PlaylistItem(object):
+    """Item in a playlist
+
+    Playlist items are managed by libgroove, the underlying object will be
+    freed when the playlist is destroyed.
+    """
+
+    def __init__(self, playlist, obj):
+        self._playlist = playlist
+        self._obj = obj
+
+    @property
+    def file(self):
+        """The GrooveFile associated with the item"""
+        fileobj = self._obj.file
+        if fileobj == ffi.NULL:
+            return None
+
+        fname = ffi.string(fileobj.filename).decode()
+        gfile = File(fname)
+        gfile._obj = fileobj
+        return gfile
+
+    @property
+    def gain(self):
+        """Volume adjustment in float format, used for loudness adjustment
+
+        To convert between dB and float use:
+            float = exp(log(10) * 0.05 * dB)
+        """
+        return self._obj.gain
+
+    @gain.setter
+    def gain(self, value):
+        lib.groove_playlist_set_item_gain(self._playlist._obj, self._obj, value)
+
+    @property
+    def peak(self):
+        """Sample peak of the item
+
+        The sample peak of this playlist item is assumed to be 1.0 in float
+        format. If you know for certain that the peak is less than 1.0, you
+        may set this value which may allow the volume adjustment to use a
+        pure amplifier rather than a compressor. This results in slightly
+        better audio quality.
+        """
+        return self._obj.gain
+
+    @peak.setter
+    def peak(self, value):
+        lib.groove_playlist_set_item_peak(self._playlist._obj, self._obj, value)
+
+    @property
+    def prev_item(self):
+        """Previous item in the playlist or None"""
+        prev_item = self._obj.prev
+        if prev_item == ffi.NULL:
+            return None
+        return PlaylistItem(self._playlist, prev_item)
+
+    @property
+    def next_item(self):
+        """Next item in the playlist or None"""
+        next_item = self._obj.next
+        if next_item == ffi.NULL:
+            return None
+        return PlaylistItem(self._playlist, next_item)
+
+    def __eq__(self, rhs):
+        return self._obj == rhs._obj
+
+
+class Playlist(MutableSequence):
+    """Linked list of PlaylistItems
+
+    Insertions accept open Groove Files, acceses return PlaylistItems
+    The Playlist is responsible for and does free PlaylistItems
+    The Playlist is not responsible for open/close/free Groove Files
+
+    Each access generates a new PlaylistItem, don't compare playlist items
+    with `is`
+
+    ```
+        playlist[n] is playlist[n] # False
+        playlist[n] == playlist[n] # True
+    ```
+
+    Since its a linked list, each list operation is O(n)
+    """
+    # TODO: Sink behavior, see groove_playlist_set_fill_mode
+
+    def __init__(self):
+        self._obj = lib.groove_playlist_create()
+        # TODO: raise proper exception
+        # TODO: read error message from AV_LOG
+        assert self._obj != ffi.NULL
+        self._obj = ffi.gc(self._obj, lib.groove_playlist_destroy)
+
+    @property
+    def gain(self):
+        """Volume adjustment in float format, used for loudness adjustment
+
+        To convert between dB and float use:
+            float = exp(log(10) * 0.05 * dB)
+        """
+        return self._obj.gain
+
+    @gain.setter
+    def gain(self, value):
+        lib.groove_playlist_set_gain(self._obj, value)
+
+    def play(self):
+        lib.groove_playlist_play(self._obj)
+
+    def pause(self):
+        lib.groove_playlist_pause(self._obj)
+
+    def seek(self, playlist_item, seconds):
+        """Seek to the given location in the playlist"""
+        lib.groove_playlist_seek(self._obj, playlist_item._obj, seconds)
+
+    def decode_position(self):
+        """Get the current position of the decode head
+
+        Returns:
+            A tuple of (playlist_item, seconds). If the playlist is empty
+            playlist_item will be None and seconds will be -1.0
+        """
+        pitem = ffi.new('struct GroovePlaylistItem **')
+        seconds = ffi.new('double *')
+        lib.groove_playlist_position(self._obj, pitem, ffi.addressof(seconds))
+        return PlaylistItem(self, pitem[0]), float(seconds)
+
+    def is_playing(self):
+        return lib.groove_playlist_playing(self._obj) == 1
+
+    def index(self, gfile, start=0, stop=None):
+        # TODO: Negative indexing
+        # TODO: Slicing
+        if start != 0 or stop is not None:
+            raise TypeError("Slicing a Playlist is not supported")
+
+        for count, item in enumerate(self):
+            if gfile == item.file:
+                return count
+
+        raise ValueError("File is not in Playlist")
+
+    def insert(self, index, gfile, gain=1.0, peak=1.0):
+        # TODO: handle index error like list does
+        next_obj = self[index]._obj
+        lib.groove_playlist_insert(self._obj, gfile._obj, gain, peak, next_obj)
+
+    def append(self, gfile, gain=1.0, peak=1.0):
+        # TODO: better error handling
+        new_item = lib.groove_playlist_insert(self._obj, gfile._obj, gain, peak, ffi.NULL)
+        assert new_item != ffi.NULL, "Out of Memory"
+
+    def clear(self):
+        lib.groove_playlist_clear(self._obj)
+
+    def reverse(self):
+        # TODO
+        raise NotImplementedError("Unsupported at this time")
+
+    def pop(self, index=-1):
+        raise NotImplementedError("Can't pop, removing from the list deletes the item")
+
+    def remove(self, gfile):
+        for item in self:
+            if item.file == gfile:
+                lib.groove_playlist_remove(self._obj, item._obj)
+                break
+        else:
+            raise ValueError("File is not in Playlist")
+
+    def __iter__(self):
+        item_obj = self._obj.head
+        while item_obj != ffi.NULL:
+            yield PlaylistItem(self, item_obj)
+            item_obj = item_obj.next
+
+    def __reversed__(self):
+        item_obj = self._obj.tail
+        while item_obj != ffi.NULL:
+            yield PlaylistItem(self, item_obj)
+            item_obj = item_obj.prev
+
+    def __len__(self):
+        return len([x for x in self])
+
+    def __getitem__(self, index):
+        # TODO: slicing
+        if isinstance(index, slice):
+            raise TypeError("Slicing a Playlist is not supported")
+
+        if index < 0:
+            iterator = reversed(self)
+            index = -index - 1
+        else:
+            iterator = self
+
+        for n, item in enumerate(iterator):
+            if n == index:
+                return PlaylistItem(self, item._obj)
+        raise IndexError
+
+    def __setitem__(self, index, value):
+        remove_obj = self[index]._obj
+        lib.groove_playlist_insert(self._obj, value._obj, 1.0, 1.0, remove_obj)
+        remove_obj = self[index+1]._obj
+        lib.groove_playlist_remove(self._obj, remove_obj)
+
+    def __delitem__(self, index):
+        remove_obj = self[index]._obj
+        lib.groove_playlist_remove(self._obj, remove_obj)
