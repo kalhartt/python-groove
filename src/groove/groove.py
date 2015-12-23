@@ -653,3 +653,143 @@ class Playlist(MutableSequence):
     def __delitem__(self, index):
         remove_obj = self[index]._obj
         lib.groove_playlist_remove(self._obj, remove_obj)
+
+
+class Buffer(object):
+    """Groove Buffer"""
+    # TODO: GrooveBuffer is ref counted, do we need to do anything with that?
+    # TODO: give these better names, they should proabably be exceptions too
+    no = _constants.GROOVE_BUFFER_NO
+    yes = _constants.GROOVE_BUFFER_YES
+    end = _constants.GROOVE_BUFFER_END
+
+    def __init__(self, playlist, obj):
+        self._playlist = playlist
+        self._obj = obj
+
+    @property
+    def data(self):
+        """Actual buffer data
+
+        for interleaved audio, data[0] is the buffer.
+        for planar audio, each channel has a separate data pointer.
+        for encoded audio, data[0] is the encoded buffer.
+        """
+        # TODO
+        pass
+
+    @property
+    def audio_format(self):
+        return AudioFormat(_obj=self._obj.format)
+
+    @property
+    def frame_count(self):
+        """Number of audio frames described by the buffer
+
+        For encoded audio, this is unknown and set to 0
+        """
+        return self._obj.frame_count
+
+    @property
+    def playlist_item(self):
+        """Playlist item being processed
+
+        When encoding, if item is None, this is a format header or trailer.
+        otherwise, this is encoded audio for the item specified.
+        when decoding, item is never None
+        """
+        item_obj = self._obj.item
+        if item_obj == ffi.NULL:
+            return None
+
+        return PlaylistItem(playlist, item_obj)
+
+    @propery
+    def position(self):
+        """Buffer offset in seconds"""
+        return self._obj.pos
+
+    @propery
+    def size(self):
+        """Total bytes in the buffer"""
+        return self._obj.size
+
+    @propery
+    def time_stamp(self):
+        """Presentation time stamp of the buffer"""
+        return self._obj.pts
+
+
+class GrooveSink(object):
+    # TODO: flush, purge, pause, play callbacks
+
+    def __init__(self):
+        # TODO: better exception handling
+        self._obj = lib.groove_sink_create()
+        assert self._obj != ffi.NULL
+        self._obj = ffi.gc(self._obj, lib.groove_sink_destroy)
+        self._playlist = None
+
+    @property
+    def audio_format(self):
+        return AudioFormat(_obj=self._obj.format)
+
+    @property
+    def disable_resample(self):
+        """Set this flag to ignore audio_format.
+
+        If you set this flag, the buffers you pull from this sink could have
+        any audio format.
+        """
+        return self._obj.disable_resample
+
+    @disable_resample.setter
+    def disable_resample(self, value):
+        if value:
+            self._obj.disable_resample = 1
+
+    @property
+    def buffer_sample_count(self):
+        """Number of frames to pull into a buffer
+
+        If set to the default of 0, groove will choose a sample count based on
+        efficiency.
+        """
+        return self._obj.buffer_sample_count
+
+    @buffer_sample_count.setter
+    def buffer_sample_count(self, value):
+        self._obj.buffer_sample_count = value
+
+    @property
+    def buffer_size(self):
+        """Buffer queue size in frames, default 8192"""
+        return self._obj.buffer_size
+
+    @gain.setter
+    def buffer_size(self, value):
+        self._obj.buffer_size = value
+
+    @property
+    def gain(self):
+        """Volume adjustment for the audio sink
+
+        It is recommended to leave this at 1.0 and adjust the playlist/item
+        gain instead
+        """
+        return self._obj.gain
+
+    @gain.setter
+    def gain(self, value):
+        lib.groove_sink_set_gain(self._obj, value)
+
+    @property
+    def playlist(self):
+        return self._playlist
+
+    @playlist.setter
+    def playlist(self, value):
+        lib.groove_sink_detach(self._obj)
+        if value is not None:
+            lib.groove_sink_attach(self._obj, value._obj)
+        self._playlist = value
