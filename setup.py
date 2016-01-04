@@ -16,6 +16,7 @@ packages = [
 
 requires = [
     'cffi>=1.0.0',
+    'decorator>=4.0'
 ]
 
 if sys.version_info < (3, 4):
@@ -39,7 +40,7 @@ setup(
     package_data={'': ['LICENSE']},
     package_dir={'': 'src'},
     include_package_data=True,
-    setup_requires=['cffi>=1.0.0'],
+    setup_requires=['cffi>=1.4.0'],
     cffi_modules=cffi_modules,
     install_requires=requires,
     zip_safe=False,

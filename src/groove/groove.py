@@ -3,14 +3,9 @@ Module providing wrapper classes for a pythonic interface to libgroove.so
 """
 from __future__ import absolute_import, unicode_literals
 
-try:
-    from collections import MutableSequence
-except ImportError:
-    from collections.abc import MutableSequence
-
-from collections import OrderedDict
 from enum import IntEnum
 from functools import wraps
+from weakref import WeakValueDictionary
 
 from groove import _constants
 from groove import utils
@@ -18,20 +13,19 @@ from groove._groove import ffi, lib
 
 
 __all__ = [
-    'AudioFormat',
     'Channel',
     'ChannelLayout',
+    'GrooveClass',
     'SampleFormat',
     'init',
     'libgroove_version',
     'libgroove_version_info',
-    'finish',
 ]
 
 
 def libgroove_version():
     """libgroove version as a string"""
-    return lib.groove_version()
+    return ffi.string(lib.groove_version()).decode('utf-8')
 
 
 def libgroove_version_info():
@@ -44,11 +38,74 @@ def libgroove_version_info():
 
 
 def init():
+    import atexit
     lib.groove_init()
+    atexit.register(lib.groove_finish)
 
 
-def finish():
-    lib.groove_finish()
+class GrooveClass(object):
+    """Base class for all objects backed by a groove struct via cffi
+
+    The attributes and methods defined on this base class will be API stable,
+    but their usage is highly discouraged!
+
+    No two python instances should wrap the same underlying C struct.
+
+    Attributes:
+        _ffitype (str): Type of the underlying object as used in `ffi.new`,
+                        e.g. `'struct GrooveFile *'`
+        _obj (cffi.cdata): The backing struct, if it has been instantiated.
+    """
+    _ffitype = None
+    __obj = None
+
+    # Keep a map of `cdata -> instance` so we can get the right
+    # instance when a C function gives us a struct pointer.
+    _obj_instance_map = WeakValueDictionary()
+
+    @property
+    def _obj(self):
+        return self.__obj
+
+    @_obj.setter
+    def _obj(self, value):
+        if value == ffi.NULL:
+            value = None
+
+        if value is not None and ffi.typeof(value) is not ffi.typeof(self._ffitype):
+            raise TypeError('obj must be of type "%s"' % cls._ffitype)
+
+        if self.__obj is not None:
+            del self._obj_instance_map[(self.__obj, self._ffitype)]
+
+        self.__obj = value
+        if value is not None:
+            self._obj_instance_map[(value, self._ffitype)] = self
+
+    @classmethod
+    def _from_obj(cls, obj):
+        """Get a Python instance for the cdata obj
+
+        Arguments:
+            obj (cffi.cdata): The struct to wrap
+
+        Returns:
+            A tuple (instance, created) where instance is a python object
+            wrapping `obj`. `created` is `False` if an existing instance was
+            found and returned. It is `True` if a new python instance was
+            created.
+        """
+        if ffi.typeof(obj) is not ffi.typeof(cls._ffitype):
+            raise TypeError('obj must be of type "%s"' % cls._ffitype)
+
+        instance = cls._obj_instance_map.get((obj, cls._ffitype), None)
+        if instance is not None:
+            return instance, False
+
+        # TODO: This makes me feel terrible and hate everything :(
+        instance = cls.__new__(cls)
+        instance._obj = obj
+        return instance, True
 
 
 @utils.unique_enum
@@ -225,571 +282,3 @@ class SampleFormat(IntEnum):
 
     def bytes_per_sample(self):
         return lib.groove_sample_format_bytes_per_sample(self)
-
-
-class AudioFormat(object):
-    """Audio Format
-
-    Attributes:
-        sample_rate ()
-        channel_layout ()
-        sample_format ()
-    """
-    _ffitype = 'struct GrooveAudioFormat *'
-
-    def __init__(self, sample_rate=None, channel_layout=None, sample_format=None, _obj=None):
-        if _obj is not None:
-            # Initialize from a separately obtained ffi object
-            # This class doesn't do any memory management on _obj in this case
-            assert ffi.typeof(_obj) is ffi.typeof(self._ffitype)
-            self._obj = _obj
-            return
-
-        self._obj = ffi.new(self._ffitype)
-        for attr in ('sample_rate', 'channel_layout', 'sample_format'):
-            value = locals()[attr]
-            if value is not None:
-                setattr(self, attr, value)
-
-    @property
-    def sample_rate(self):
-        return self._obj.sample_rate
-
-    @sample_rate.setter
-    def sample_rate(self, value):
-        self._obj.sample_rate = value
-
-    @property
-    def channel_layout(self):
-        return ChannelLayout.__values__[self._obj.channel_layout]
-
-    @channel_layout.setter
-    def channel_layout(self, value):
-        self._obj.channel_layout = value
-
-    @property
-    def sample_format(self):
-        return SampleFormat.__values__[self._obj.sample_fmt]
-
-    @sample_format.setter
-    def sample_format(self, value):
-        self._obj.sample_fmt = value
-
-    def __eq__(self, rhs):
-        if not isinstance(rhs, AudioFormat):
-            return False
-
-        return lib.groove_audio_formats_equal(self._obj, rhs._obj) == 1
-
-
-class File(object):
-    """GrooveFile wrapper
-
-    Args:
-        filename (str)  Name of the file to open
-    """
-    _ffitype = 'struct GrooveFile *'
-    tag_match_case = _constants.GROOVE_TAG_MATCH_CASE
-    tag_dont_overwrite = _constants.GROOVE_TAG_MATCH_CASE
-    tag_append = _constants.GROOVE_TAG_MATCH_CASE
-
-    def __init__(self, filename):
-        self._obj = None
-        self._filename = filename
-
-    @property
-    def filename(self):
-        return self._filename
-
-    def _require_open(method):
-        # TODO: preserve argspec
-        @wraps(method)
-        def new_method(self, *args, **kwargs):
-            if self._obj is None:
-                raise ValueError('File is not open')
-            return method(self, *args, **kwargs)
-        return new_method
-
-    def open(self):
-        """Open the file
-
-        In general this should not be used, use the context manager approach
-        when possible
-        """
-        if self._obj is not None:
-            raise ValueError('File is already open')
-
-        self._obj = lib.groove_file_open(self._filename.encode())
-        if self._obj == ffi.NULL:
-            # TODO: get error from AV_LOG
-            self._obj = None
-            raise ValueError('I/O error opening file')
-
-    def close(self):
-        """Close the file
-
-        In general this should not be used, use the context manager approach
-        when possible
-        """
-        lib.groove_file_close(self._obj or ffi.NULL)
-        self._obj = None
-
-    @_require_open
-    def save(self):
-        """Save changes made to the file"""
-        status = lib.groove_file_save(self._obj)
-        if status < 0:
-            # TODO: Read error msg from AV_LOG
-            raise ValueError('Unknown error')
-
-    @_require_open
-    def dirty(self):
-        """True if unsaved changed have been made to the file"""
-        return self._obj.dirty == 1
-
-    @_require_open
-    def get_tags(self, flags=0):
-        """Get the tags for an open file
-
-        Args:
-            flags (int)  Bitmask of tag flags
-
-        Returns:
-            A dictionary of `name: value` pairs
-        """
-        # Have to make a GrooveTag** so cffi doesn't try to sizeof GrooveTag
-        gtag_ptr = ffi.new('struct GrooveTag **')
-        gtag = gtag_ptr[0]
-        tags = OrderedDict()
-        while True:
-            gtag = lib.groove_file_metadata_get(self._obj, b'', gtag, flags)
-            if gtag == ffi.NULL:
-                break
-
-            # TODO: figure out proper decoding method here
-            # I know ID3 tags have an encoding byte, not sure about what we
-            # get from ffmpeg. Also some tags have binary content, maybe
-            # we shouldnt decode value at all?
-            key = ffi.string(lib.groove_tag_key(gtag)).decode()
-            value = ffi.string(lib.groove_tag_value(gtag)).decode()
-            tags[key] = value
-
-        return tags
-
-    @_require_open
-    def set_tags(self, tagdict, flags=0):
-        """Shortcut to set each flag in tagdict
-
-        This will overwrite existing tags, but will not delete existing tags
-        that are not listed in tagdict. To delete a tag, set its value to
-        `None`
-        """
-        for k, v in tagdict.items():
-            self.set_tag(k, v, flags)
-
-    @_require_open
-    def set_tag(self, key, value, flags=0):
-        """Set tag `key` to `value`
-
-        If `value` is `None`, the tag will be deleted
-        """
-        if value is None:
-            value = ffi.NULL
-        else:
-            value = value.encode()
-
-        # TODO: Is system encoding right to use here?
-        status = lib.groove_file_metadata_set(self._obj, key.encode(), value, flags)
-        return status
-
-    @_require_open
-    def short_names(self):
-        """A list of short names for the format"""
-        names = ffi.string(lib.groove_file_short_names(self._obj)).decode()
-        return names.split(',')
-
-    @_require_open
-    def duration(self):
-        """Get the main audio stream duration in seconds
-
-        Note that this relies on a combination of format headers and
-        heuristics. It can be inaccurate. The most accurate way to learn
-        the duration of a file is to use GrooveLoudnessDetector.
-        """
-        return lib.groove_file_duration(self._obj)
-
-    @_require_open
-    def audio_format(self):
-        audio_format = AudioFormat()
-        lib.groove_file_audio_format(self._obj, audio_format._obj)
-        return audio_format
-
-    def __enter__(self):
-        self.open()
-        return self
-
-    def __exit__(self, exc_type, exc_value, exc_trackback):
-        self.close()
-
-    def __eq__(self, rhs):
-        if not isinstance(rhs, File):
-            return False
-        return self.filename == rhs.filename
-
-
-class PlaylistItem(object):
-    """Item in a playlist
-
-    Playlist items are managed by libgroove, the underlying object will be
-    freed when the playlist is destroyed.
-    """
-
-    def __init__(self, playlist, obj):
-        self._playlist = playlist
-        self._obj = obj
-
-    @property
-    def file(self):
-        """The GrooveFile associated with the item"""
-        fileobj = self._obj.file
-        if fileobj == ffi.NULL:
-            return None
-
-        fname = ffi.string(fileobj.filename).decode()
-        gfile = File(fname)
-        gfile._obj = fileobj
-        return gfile
-
-    @property
-    def gain(self):
-        """Volume adjustment in float format, used for loudness adjustment
-
-        To convert between dB and float use:
-            float = exp(log(10) * 0.05 * dB)
-        """
-        return self._obj.gain
-
-    @gain.setter
-    def gain(self, value):
-        lib.groove_playlist_set_item_gain(self._playlist._obj, self._obj, value)
-
-    @property
-    def peak(self):
-        """Sample peak of the item
-
-        The sample peak of this playlist item is assumed to be 1.0 in float
-        format. If you know for certain that the peak is less than 1.0, you
-        may set this value which may allow the volume adjustment to use a
-        pure amplifier rather than a compressor. This results in slightly
-        better audio quality.
-        """
-        return self._obj.gain
-
-    @peak.setter
-    def peak(self, value):
-        lib.groove_playlist_set_item_peak(self._playlist._obj, self._obj, value)
-
-    @property
-    def prev_item(self):
-        """Previous item in the playlist or None"""
-        prev_item = self._obj.prev
-        if prev_item == ffi.NULL:
-            return None
-        return PlaylistItem(self._playlist, prev_item)
-
-    @property
-    def next_item(self):
-        """Next item in the playlist or None"""
-        next_item = self._obj.next
-        if next_item == ffi.NULL:
-            return None
-        return PlaylistItem(self._playlist, next_item)
-
-    def __eq__(self, rhs):
-        return self._obj == rhs._obj
-
-
-class Playlist(MutableSequence):
-    """Linked list of PlaylistItems
-
-    Insertions accept open Groove Files, acceses return PlaylistItems
-    The Playlist is responsible for and does free PlaylistItems
-    The Playlist is not responsible for open/close/free Groove Files
-
-    Each access generates a new PlaylistItem, don't compare playlist items
-    with `is`
-
-    ```
-        playlist[n] is playlist[n] # False
-        playlist[n] == playlist[n] # True
-    ```
-
-    Since its a linked list, each list operation is O(n)
-    """
-    # TODO: Sink behavior, see groove_playlist_set_fill_mode
-
-    def __init__(self):
-        self._obj = lib.groove_playlist_create()
-        # TODO: raise proper exception
-        # TODO: read error message from AV_LOG
-        assert self._obj != ffi.NULL
-        self._obj = ffi.gc(self._obj, lib.groove_playlist_destroy)
-
-    @property
-    def gain(self):
-        """Volume adjustment in float format, used for loudness adjustment
-
-        To convert between dB and float use:
-            float = exp(log(10) * 0.05 * dB)
-        """
-        return self._obj.gain
-
-    @gain.setter
-    def gain(self, value):
-        lib.groove_playlist_set_gain(self._obj, value)
-
-    def play(self):
-        lib.groove_playlist_play(self._obj)
-
-    def pause(self):
-        lib.groove_playlist_pause(self._obj)
-
-    def seek(self, playlist_item, seconds):
-        """Seek to the given location in the playlist"""
-        lib.groove_playlist_seek(self._obj, playlist_item._obj, seconds)
-
-    def decode_position(self):
-        """Get the current position of the decode head
-
-        Returns:
-            A tuple of (playlist_item, seconds). If the playlist is empty
-            playlist_item will be None and seconds will be -1.0
-        """
-        pitem = ffi.new('struct GroovePlaylistItem **')
-        seconds = ffi.new('double *')
-        lib.groove_playlist_position(self._obj, pitem, ffi.addressof(seconds))
-        return PlaylistItem(self, pitem[0]), float(seconds)
-
-    def is_playing(self):
-        return lib.groove_playlist_playing(self._obj) == 1
-
-    def index(self, gfile, start=0, stop=None):
-        # TODO: Negative indexing
-        # TODO: Slicing
-        if start != 0 or stop is not None:
-            raise TypeError("Slicing a Playlist is not supported")
-
-        for count, item in enumerate(self):
-            if gfile == item.file:
-                return count
-
-        raise ValueError("File is not in Playlist")
-
-    def insert(self, index, gfile, gain=1.0, peak=1.0):
-        # TODO: handle index error like list does
-        next_obj = self[index]._obj
-        lib.groove_playlist_insert(self._obj, gfile._obj, gain, peak, next_obj)
-
-    def append(self, gfile, gain=1.0, peak=1.0):
-        # TODO: better error handling
-        new_item = lib.groove_playlist_insert(self._obj, gfile._obj, gain, peak, ffi.NULL)
-        assert new_item != ffi.NULL, "Out of Memory"
-
-    def clear(self):
-        lib.groove_playlist_clear(self._obj)
-
-    def reverse(self):
-        # TODO
-        raise NotImplementedError("Unsupported at this time")
-
-    def pop(self, index=-1):
-        raise NotImplementedError("Can't pop, removing from the list deletes the item")
-
-    def remove(self, gfile):
-        for item in self:
-            if item.file == gfile:
-                lib.groove_playlist_remove(self._obj, item._obj)
-                break
-        else:
-            raise ValueError("File is not in Playlist")
-
-    def __iter__(self):
-        item_obj = self._obj.head
-        while item_obj != ffi.NULL:
-            yield PlaylistItem(self, item_obj)
-            item_obj = item_obj.next
-
-    def __reversed__(self):
-        item_obj = self._obj.tail
-        while item_obj != ffi.NULL:
-            yield PlaylistItem(self, item_obj)
-            item_obj = item_obj.prev
-
-    def __len__(self):
-        return len([x for x in self])
-
-    def __getitem__(self, index):
-        # TODO: slicing
-        if isinstance(index, slice):
-            raise TypeError("Slicing a Playlist is not supported")
-
-        if index < 0:
-            iterator = reversed(self)
-            index = -index - 1
-        else:
-            iterator = self
-
-        for n, item in enumerate(iterator):
-            if n == index:
-                return PlaylistItem(self, item._obj)
-        raise IndexError
-
-    def __setitem__(self, index, value):
-        remove_obj = self[index]._obj
-        lib.groove_playlist_insert(self._obj, value._obj, 1.0, 1.0, remove_obj)
-        remove_obj = self[index+1]._obj
-        lib.groove_playlist_remove(self._obj, remove_obj)
-
-    def __delitem__(self, index):
-        remove_obj = self[index]._obj
-        lib.groove_playlist_remove(self._obj, remove_obj)
-
-
-class Buffer(object):
-    """Groove Buffer"""
-    # TODO: GrooveBuffer is ref counted, do we need to do anything with that?
-    # TODO: give these better names, they should proabably be exceptions too
-    no = _constants.GROOVE_BUFFER_NO
-    yes = _constants.GROOVE_BUFFER_YES
-    end = _constants.GROOVE_BUFFER_END
-
-    def __init__(self, playlist, obj):
-        self._playlist = playlist
-        self._obj = obj
-
-    @property
-    def data(self):
-        """Actual buffer data
-
-        for interleaved audio, data[0] is the buffer.
-        for planar audio, each channel has a separate data pointer.
-        for encoded audio, data[0] is the encoded buffer.
-        """
-        # TODO
-        pass
-
-    @property
-    def audio_format(self):
-        return AudioFormat(_obj=self._obj.format)
-
-    @property
-    def frame_count(self):
-        """Number of audio frames described by the buffer
-
-        For encoded audio, this is unknown and set to 0
-        """
-        return self._obj.frame_count
-
-    @property
-    def playlist_item(self):
-        """Playlist item being processed
-
-        When encoding, if item is None, this is a format header or trailer.
-        otherwise, this is encoded audio for the item specified.
-        when decoding, item is never None
-        """
-        item_obj = self._obj.item
-        if item_obj == ffi.NULL:
-            return None
-
-        return PlaylistItem(playlist, item_obj)
-
-    @propery
-    def position(self):
-        """Buffer offset in seconds"""
-        return self._obj.pos
-
-    @propery
-    def size(self):
-        """Total bytes in the buffer"""
-        return self._obj.size
-
-    @propery
-    def time_stamp(self):
-        """Presentation time stamp of the buffer"""
-        return self._obj.pts
-
-
-class GrooveSink(object):
-    # TODO: flush, purge, pause, play callbacks
-
-    def __init__(self):
-        # TODO: better exception handling
-        self._obj = lib.groove_sink_create()
-        assert self._obj != ffi.NULL
-        self._obj = ffi.gc(self._obj, lib.groove_sink_destroy)
-        self._playlist = None
-
-    @property
-    def audio_format(self):
-        return AudioFormat(_obj=self._obj.format)
-
-    @property
-    def disable_resample(self):
-        """Set this flag to ignore audio_format.
-
-        If you set this flag, the buffers you pull from this sink could have
-        any audio format.
-        """
-        return self._obj.disable_resample
-
-    @disable_resample.setter
-    def disable_resample(self, value):
-        if value:
-            self._obj.disable_resample = 1
-
-    @property
-    def buffer_sample_count(self):
-        """Number of frames to pull into a buffer
-
-        If set to the default of 0, groove will choose a sample count based on
-        efficiency.
-        """
-        return self._obj.buffer_sample_count
-
-    @buffer_sample_count.setter
-    def buffer_sample_count(self, value):
-        self._obj.buffer_sample_count = value
-
-    @property
-    def buffer_size(self):
-        """Buffer queue size in frames, default 8192"""
-        return self._obj.buffer_size
-
-    @gain.setter
-    def buffer_size(self, value):
-        self._obj.buffer_size = value
-
-    @property
-    def gain(self):
-        """Volume adjustment for the audio sink
-
-        It is recommended to leave this at 1.0 and adjust the playlist/item
-        gain instead
-        """
-        return self._obj.gain
-
-    @gain.setter
-    def gain(self, value):
-        lib.groove_sink_set_gain(self._obj, value)
-
-    @property
-    def playlist(self):
-        return self._playlist
-
-    @playlist.setter
-    def playlist(self, value):
-        lib.groove_sink_detach(self._obj)
-        if value is not None:
-            lib.groove_sink_attach(self._obj, value._obj)
-        self._playlist = value

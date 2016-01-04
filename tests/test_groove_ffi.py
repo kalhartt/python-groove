@@ -1,6 +1,8 @@
 """
 Test the ffi wrapper for libgroove
 """
+from __future__ import absolute_import, unicode_literals
+
 from groove._groove import ffi, lib
 
 

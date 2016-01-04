@@ -145,6 +145,7 @@ struct GrooveSink {
     void *userdata;
     void (*flush)(struct GrooveSink *);
     void (*purge)(struct GrooveSink *, struct GroovePlaylistItem *);
+    void (*pause)(struct GrooveSink *);
     void (*play)(struct GrooveSink *);
 
     struct GroovePlaylist *playlist;
@@ -164,6 +165,13 @@ int groove_sink_buffer_get(struct GrooveSink *sink,
 int groove_sink_buffer_peek(struct GrooveSink *sink, int block);
 
 int groove_sink_set_gain(struct GrooveSink *sink, double gain);
+
+extern "Python" {
+    void groove_sink_callback_flush(struct GrooveSink *);
+    void groove_sink_callback_purge(struct GrooveSink *, struct GroovePlaylistItem *);
+    void groove_sink_callback_pause(struct GrooveSink *);
+    void groove_sink_callback_play(struct GrooveSink *);
+}
 """
 
 _queue_header = r"""
@@ -234,6 +242,126 @@ void groove_encoder_position(struct GrooveEncoder *encoder,
 int groove_encoder_set_gain(struct GrooveEncoder *encoder, double gain);
 """
 
+_fingerprinter_header = r"""
+struct GrooveFingerprinterInfo {
+    int32_t *fingerprint;
+    int fingerprint_size;
+    double duration;
+    struct GroovePlaylistItem *item;
+};
+
+struct GrooveFingerprinter {
+    int info_queue_size;
+    int sink_buffer_size;
+    struct GroovePlaylist *playlist;
+};
+
+struct GrooveFingerprinter *groove_fingerprinter_create(void);
+void groove_fingerprinter_destroy(struct GrooveFingerprinter *printer);
+
+int groove_fingerprinter_attach(struct GrooveFingerprinter *printer,
+        struct GroovePlaylist *playlist);
+int groove_fingerprinter_detach(struct GrooveFingerprinter *printer);
+
+int groove_fingerprinter_info_get(struct GrooveFingerprinter *printer,
+        struct GrooveFingerprinterInfo *info, int block);
+
+void groove_fingerprinter_free_info(struct GrooveFingerprinterInfo *info);
+
+int groove_fingerprinter_info_peek(struct GrooveFingerprinter *printer,
+        int block);
+
+void groove_fingerprinter_position(struct GrooveFingerprinter *printer,
+        struct GroovePlaylistItem **item, double *seconds);
+
+int groove_fingerprinter_encode(int32_t *fp, int size, char **encoded_fp);
+
+int groove_fingerprinter_decode(char *encoded_fp, int32_t **fp, int *size);
+
+void groove_fingerprinter_dealloc(void *ptr);
+"""
+
+_loudness_header = r"""
+struct GrooveLoudnessDetectorInfo {
+    double loudness;
+    double peak;
+    double duration;
+    struct GroovePlaylistItem *item;
+};
+
+struct GrooveLoudnessDetector {
+    int info_queue_size;
+
+    int sink_buffer_size;
+
+    int disable_album;
+
+    struct GroovePlaylist *playlist;
+};
+
+struct GrooveLoudnessDetector *groove_loudness_detector_create(void);
+void groove_loudness_detector_destroy(struct GrooveLoudnessDetector *detector);
+
+int groove_loudness_detector_attach(struct GrooveLoudnessDetector *detector,
+        struct GroovePlaylist *playlist);
+int groove_loudness_detector_detach(struct GrooveLoudnessDetector *detector);
+
+int groove_loudness_detector_info_get(struct GrooveLoudnessDetector *detector,
+        struct GrooveLoudnessDetectorInfo *info, int block);
+
+int groove_loudness_detector_info_peek(struct GrooveLoudnessDetector *detector,
+        int block);
+
+void groove_loudness_detector_position(struct GrooveLoudnessDetector *detector,
+        struct GroovePlaylistItem **item, double *seconds);
+"""
+
+_player_header = r"""
+union GroovePlayerEvent {
+    enum GroovePlayerEventType type;
+};
+
+struct GroovePlayer {
+    int device_index;
+
+    struct GrooveAudioFormat target_audio_format;
+
+    int device_buffer_size;
+
+    int sink_buffer_size;
+
+    double gain;
+
+    struct GroovePlaylist *playlist;
+
+    struct GrooveAudioFormat actual_audio_format;
+
+    int use_exact_audio_format;
+};
+
+int groove_device_count(void);
+
+const char *groove_device_name(int index);
+
+struct GroovePlayer *groove_player_create(void);
+void groove_player_destroy(struct GroovePlayer *player);
+
+int groove_player_attach(struct GroovePlayer *player,
+        struct GroovePlaylist *playlist);
+int groove_player_detach(struct GroovePlayer *player);
+
+void groove_player_position(struct GroovePlayer *player,
+        struct GroovePlaylistItem **item, double *seconds);
+
+int groove_player_event_get(struct GroovePlayer *player,
+        union GroovePlayerEvent *event, int block);
+int groove_player_event_peek(struct GroovePlayer *player, int block);
+
+int groove_player_set_gain(struct GroovePlayer *player, double gain);
+
+struct GrooveAudioFormat groove_player_get_device_audio_format(struct GroovePlayer *player);
+"""
+
 ##########
 # FFI Build
 ##########
@@ -242,12 +370,25 @@ _groove_source = r"""
 #include <groove/groove.h>
 #include <groove/queue.h>
 #include <groove/encoder.h>
+#include <groovefingerprinter/fingerprinter.h>
+#include <grooveloudness/loudness.h>
+#include <grooveplayer/player.h>
 """
+# TODO: set these differently depending on platform/compiler
+libs = [
+    ':libgroove.so.4',
+    ':libgroovefingerprinter.so.4',
+    ':libgrooveloudness.so.4',
+    ':libgrooveplayer.so.4',
+]
 ffi_groove = FFI()
-ffi_groove.set_source('groove._groove', _groove_source, libraries=[':libgroove.so.4'])
+ffi_groove.set_source('groove._groove', _groove_source, libraries=libs)
 ffi_groove.cdef(_groove_header)
 ffi_groove.cdef(_queue_header)
 ffi_groove.cdef(_encoder_header)
+ffi_groove.cdef(_fingerprinter_header)
+ffi_groove.cdef(_loudness_header)
+ffi_groove.cdef(_player_header)
 
 if __name__ == '__main__':
     ffi_groove.compile()

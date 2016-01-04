@@ -18,9 +18,8 @@ from __future__ import print_function, unicode_literals
 import logging
 import sys
 
-import groove._constants as c
 from docopt import docopt
-from groove._groove import ffi, lib
+import groove
 
 
 logging.basicConfig()
@@ -28,65 +27,54 @@ _log = logging.getLogger(__name__)
 
 
 def main(bitrate, fmt, codec, mime, outname, *infilenames):
-    fmtcstr = ffi.new('char[]', fmt.encode())
-    codeccstr = ffi.new('char[]', codec.encode())
-    mimecstr = ffi.new('char[]', mime.encode())
-    outcstr = ffi.new('char[]', outname.encode())
-    gplaylist = lib.groove_playlist_create()
+    # Create a playlist and encoder
+    playlist = groove.Playlist()
+    encoder = groove.Encoder()
+    encoder.bitrate = bitrate * 1000
+    encoder.format_short_name = fmt
+    encoder.codec_short_name = codec
+    encoder.mime_type = mime
+    encoder.filename = outname
 
+    # Open all the files and add them to the playlist
     for fname in infilenames:
-        gfile = lib.groove_file_open(fname.encode())
-        if gfile == ffi.NULL:
-            _log.error('Error opening input file %s', fname)
-            return 1
+        gfile = groove.File(fname)
+        gfile.open()
+        playlist.append(gfile, 1.0, 1.0)
 
-        lib.groove_playlist_insert(gplaylist, gfile, 1.0, 1.0, ffi.NULL)
+    # If we are only converting one file, copy the audio format and metadata
+    if len(playlist) == 1:
+        pitem = playlist[0]
 
-    gencoder = lib.groove_encoder_create()
-    gencoder.bit_rate = bitrate * 1000
-    gencoder.codec_short_name = codeccstr
-    gencoder.format_short_name = fmtcstr
-    gencoder.filename = outcstr
-    gencoder.mime_type = mimecstr
+        infmt = pitem.file.audio_format()
+        outfmt = encoder.target_audio_format
+        outfmt.clone(infmt)
 
-    if lib.groove_playlist_count(gplaylist) == 1:
-        lib.groove_file_audio_format(gplaylist.head.file, ffi.addressof(gencoder.target_audio_format))
+        tags = pitem.file.get_tags()
+        encoder.set_tags(tags)
 
-        # copy metadata
-        gtag = ffi.new('struct GrooveTag **')
-        while True:
-            gtag[0] = lib.groove_file_metadata_get(gplaylist.head.file, b'', gtag[0], 0)
-            if gtag[0] == ffi.NULL:
-                break
+    # attach the playlist to the encoder
+    encoder.playlist = playlist
 
-            key = lib.groove_tag_key(gtag[0])
-            value = lib.groove_tag_value(gtag[0])
-            _log.warning('key: %s, value %s', ffi.string(key), ffi.string(value))
-            lib.groove_encoder_metadata_set(gencoder, key, value, 0)
-
-    if lib.groove_encoder_attach(gencoder, gplaylist) < 0:
-        _log.error('error attaching encoder')
-        return 1
-
+    # Open the ouput file and write the results
     with open(outname, 'wb') as ofile:
-        gbuffer = ffi.new('struct GrooveBuffer **')
-        while lib.groove_encoder_buffer_get(gencoder, gbuffer, 1) == c.GROOVE_BUFFER_YES:
-            message = ffi.buffer(gbuffer[0].data[0], gbuffer[0].size)
-            ofile.write(message)
-            lib.groove_buffer_unref(gbuffer[0])
+        while True:
+            try:
+                buff = encoder.get_buffer(True)
+            except groove.Buffer.End:
+                break
+            ofile.write(buff.data)
 
-    lib.groove_encoder_detach(gencoder)
-    lib.groove_encoder_destroy(gencoder)
+            # unref the buffer to advance
+            buff.unref()
 
-    item = gplaylist.head
-    while item != ffi.NULL:
-        gfile = item.file
-        nextitem = item.next
-        lib.groove_playlist_remove(gplaylist, item)
-        lib.groove_file_close(gfile)
-        item = nextitem
+    # Detach the playlist
+    encoder.playlist = None
 
-    lib.groove_playlist_destroy(gplaylist)
+    # Close and remove files from the playlist
+    while len(playlist) > 0:
+        playlist[0].file.close()
+        del playlist[0]
 
     return 0
 
@@ -100,17 +88,12 @@ if __name__ == '__main__':
         _log.error('Could not parse bitrate \"%s\" as an integer', args['--bitrate'])
         sys.exit(1)
 
-    assert lib.groove_init() == 0, 'Failed to initialize libgroove'
-    lib.groove_set_logging(c.GROOVE_LOG_INFO)
-
-    status = main(
+    groove.init()
+    sys.exit(main(
         args['--bitrate'],
         args['--format'],
         args['--codec'],
         args['--mime'],
         args['--output'],
         *args['FILE']
-    )
-
-    lib.groove_finish()
-    sys.exit(status)
+    ))
