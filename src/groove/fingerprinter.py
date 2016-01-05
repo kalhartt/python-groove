@@ -4,14 +4,15 @@ from groove import utils
 from groove._groove import ffi, lib
 from groove.groove import GrooveClass
 
-__all__ = []
+__all__ = ['Fingerprinter']
 
 
-class FingerPrinter(GrooveClass):
+class Fingerprinter(GrooveClass):
     """Use this to find out the unique id of an audio track"""
+    _ffitype = 'struct GrooveFingerprinter *'
 
     info_queue_size = utils.property_convert('info_queue_size', int,
-        doc="""Maximum number of items to store in this FingerPrinter's queue
+        doc="""Maximum number of items to store in this Fingerprinter's queue
 
         This defaults to MAX_INT, meaning that fingerprinter will cause the
         decoder to decode the entire playlist. If you want instead, for
@@ -56,12 +57,7 @@ class FingerPrinter(GrooveClass):
 
     @property
     def playlist(self):
-        """Playlist to generate fingerprints for
-
-        Once a playlist is attached, it must be detached before the
-        fingerprinter is released.
-        """
-        # TODO: ensure release in __del__?
+        """Playlist to generate fingerprints for"""
         return self._playlist
 
     @playlist.setter
@@ -74,28 +70,42 @@ class FingerPrinter(GrooveClass):
             assert lib.groove_fingerprinter_attach(self._obj, value._obj) == 0
             self._playlist = value
 
-    def __init__(self):
+    def __init__(self, base64_encode=True):
         # TODO: error handling
         obj = lib.groove_fingerprinter_create()
         assert obj != ffi.NULL
         self._obj = ffi.gc(obj, lib.groove_fingerprinter_destroy)
         self._playlist = None
+        self.base64_encode = base64_encode
 
-    def __next__(self):
+    def __del__(self):
+        # Make sure playlist gets detached before we loose the obj
+        if self.playlist is not None:
+            self.playlist = None
+
+    def __iter__(self):
         info_obj = ffi.new('struct GrooveFingerprinterInfo *');
         while True:
             status = lib.groove_fingerprinter_info_get(self._obj, info_obj, True)
             assert status >= 0
-            if status == 0:
+            if status != 1 or info_obj.item == ffi.NULL:
                 break
 
-            # TODO: add flag on printer to return encoded fp here?
-            fp = [int(fp_obj[n]) for n in range(size_obj_ptr[0])]
-            duation = float(info.duration)
-            pitem = self.playlist._pitem(info_obj.item)
-            return (fp, duration, pitem)
+            fp_obj = info_obj.fingerprint
+            fp_size_obj = info_obj.fingerprint_size
 
-    next = __next__
+            if self.base64_encode:
+                efp_obj_ptr = ffi.new('char **')
+                assert lib.groove_fingerprinter_encode(fp_obj, fp_size_obj, efp_obj_ptr) == 0
+                fp = ffi.string(efp_obj_ptr[0])
+                lib.groove_fingerprinter_dealloc(efp_obj_ptr[0])
+            else:
+                fp = [int(fp_obj[n]) for n in range(fp_size_obj)]
+
+            duration = float(info_obj.duration)
+            pitem = self.playlist._pitem(info_obj.item)
+            lib.groove_fingerprinter_free_info(info_obj)
+            yield (fp, duration, pitem)
 
     def info_peek(self, block=False):
         """Check if info is ready"""
