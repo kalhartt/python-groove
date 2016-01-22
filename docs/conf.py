@@ -33,12 +33,16 @@ extlinks = {
     'issue': ('https://github.com/kalhartt/python-groove/issues/%s', '#'),
     'pr': ('https://github.com/kalhartt/python-groove/pull/%s', 'PR #'),
 }
-import sphinx_py3doc_enhanced_theme
-html_theme = "sphinx_py3doc_enhanced_theme"
-html_theme_path = [sphinx_py3doc_enhanced_theme.get_html_theme_path()]
-html_theme_options = {
-    'githuburl': 'https://github.com/kalhartt/python-groove/'
-}
+
+if os.getenv('READTHEDOCS'):
+    html_theme = 'default'
+else:
+    import sphinx_py3doc_enhanced_theme
+    html_theme = 'sphinx_py3doc_enhanced_theme'
+    html_theme_path = [sphinx_py3doc_enhanced_theme.get_html_theme_path()]
+    html_theme_options = {
+        'githuburl': 'https://github.com/kalhartt/python-groove/'
+    }
 
 html_use_smartypants = True
 html_last_updated_fmt = '%b %d, %Y'
