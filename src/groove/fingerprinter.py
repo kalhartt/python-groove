@@ -1,30 +1,27 @@
 from __future__ import absolute_import, unicode_literals
 
+from collections import namedtuple
+
 from groove import utils
 from groove._groove import ffi, lib
 from groove.groove import GrooveClass
 
-__all__ = ['Fingerprinter']
+__all__ = [
+    'Fingerprinter',
+    'FingerprinterInfo',
+]
+
+
+FingerprinterInfo = namedtuple('FingerprinterInfo', [
+    'fingerprint',
+    'duration',
+    'playlist_item',
+])
 
 
 class Fingerprinter(GrooveClass):
     """Use this to find out the unique id of an audio track"""
     _ffitype = 'struct GrooveFingerprinter *'
-
-    info_queue_size = utils.property_convert('info_queue_size', int,
-        doc="""Maximum number of items to store in this Fingerprinter's queue
-
-        This defaults to MAX_INT, meaning that fingerprinter will cause the
-        decoder to decode the entire playlist. If you want instead, for
-        example, obtain fingerprints at the same time as playback, you might
-        set this value to 1.
-        """)
-
-    sink_buffer_size = utils.property_convert('sink_buffer_size', int,
-        doc="""How big the sink buffer should be, in sample frames
-
-        This defaults to 8192.
-        """)
 
     @classmethod
     def encode(cls, fp):
@@ -54,6 +51,21 @@ class Fingerprinter(GrooveClass):
         lib.groove_fingerprinter_dealloc(fp_obj)
 
         return result
+
+    info_queue_size = utils.property_convert('info_queue_size', int,
+        doc="""Maximum number of items to store in this Fingerprinter's queue
+
+        This defaults to MAX_INT, meaning that fingerprinter will cause the
+        decoder to decode the entire playlist. If you want instead, for
+        example, obtain fingerprints at the same time as playback, you might
+        set this value to 1.
+        """)
+
+    sink_buffer_size = utils.property_convert('sink_buffer_size', int,
+        doc="""How big the sink buffer should be, in sample frames
+
+        This defaults to 8192.
+        """)
 
     @property
     def playlist(self):
@@ -105,7 +117,7 @@ class Fingerprinter(GrooveClass):
             duration = float(info_obj.duration)
             pitem = self.playlist._pitem(info_obj.item)
             lib.groove_fingerprinter_free_info(info_obj)
-            yield (fp, duration, pitem)
+            yield FingerprinterInfo(fp, duration, pitem)
 
     def info_peek(self, block=False):
         """Check if info is ready"""

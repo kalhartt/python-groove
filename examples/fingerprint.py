@@ -4,7 +4,11 @@
 Calculate the fingerprint for a set of audio files
 
 Usage:
-    fingerprint [--raw] FILE...
+    fingerprint [-v...] [--raw] FILE...
+
+Options:
+    --raw              Print the raw fingerprint, defaults to b64-encoded
+    -v --verbose       Set logging level, repeat to increase verbosity
 """
 from __future__ import print_function, unicode_literals
 
@@ -15,7 +19,6 @@ from docopt import docopt
 import groove
 
 
-logging.basicConfig()
 _log = logging.getLogger(__name__)
 
 
@@ -52,6 +55,12 @@ def main(raw, *infiles):
 
 if __name__ == '__main__':
     args = docopt(__doc__)
+
+    loglvl = {
+        0: logging.WARNING,
+        1: logging.INFO,
+    }.get(args['--verbose'], logging.DEBUG)
+    logging.basicConfig(level=loglvl)
 
     groove.init()
     sys.exit(main(

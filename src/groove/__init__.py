@@ -11,6 +11,8 @@ from groove.buffer import *
 from groove.encoder import *
 from groove.file import *
 from groove.fingerprinter import *
+from groove.loudness import *
+from groove.player import *
 from groove.playlist import *
 from groove.sink import *
 
